@@ -1,0 +1,21 @@
+# Slim istiod for the local dual-revision lab (colima/k3s, 6 CPU / 8 GiB).
+# Chart defaults request 500m CPU / 2Gi memory per istiod, which will not fit
+# several revisions on a single node. These values are lab-only.
+
+pilot:
+  autoscaleEnabled: false
+  replicaCount: 1
+  resources:
+    requests:
+      cpu: 100m
+      memory: 384Mi
+    limits:
+      memory: 1Gi
+
+global:
+  istioNamespace: istio-system
+
+meshConfig:
+  # Envoy access logs to stdout so route-matching behaviour is observable
+  # without wiring up telemetry.
+  accessLogFile: /dev/stdout

@@ -1,0 +1,76 @@
+# Four routes, identical except for the istio.io/rev label, all attached to the
+# same Gateway with the same backend. Each is written ONCE and never edited:
+# route ownership is re-evaluated only on a route object event, so mutating a
+# route to change its label would conflate "which revision owns it" with "did a
+# write force re-evaluation".
+#
+#   lit-1-28    literal revision, NOT the Gateway's revision
+#   lit-1-29    literal revision, matches the Gateway's revision
+#   inherit     no label — picks up the namespace's istio.io/rev, which is a TAG
+#   tag         label is a TAG rather than a literal revision
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: route-lit-__REV_OLD__
+  namespace: gwtest
+  labels:
+    istio.io/rev: __REV_OLD__
+spec:
+  parentRefs:
+    - name: gtw-lab
+  hostnames:
+    - lit-old.lab.local
+  rules:
+    - backendRefs:
+        - name: whoami
+          port: 80
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: route-lit-__REV_NEW__
+  namespace: gwtest
+  labels:
+    istio.io/rev: __REV_NEW__
+spec:
+  parentRefs:
+    - name: gtw-lab
+  hostnames:
+    - lit-new.lab.local
+  rules:
+    - backendRefs:
+        - name: whoami
+          port: 80
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: route-inherit
+  namespace: gwtest
+spec:
+  parentRefs:
+    - name: gtw-lab
+  hostnames:
+    - inherit.lab.local
+  rules:
+    - backendRefs:
+        - name: whoami
+          port: 80
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: route-tag
+  namespace: gwtest
+  labels:
+    istio.io/rev: ingressgw
+spec:
+  parentRefs:
+    - name: gtw-lab
+  hostnames:
+    - tag.lab.local
+  rules:
+    - backendRefs:
+        - name: whoami
+          port: 80

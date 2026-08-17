@@ -1,0 +1,83 @@
+# Both sides resolve through TAGS, which is how a real deployment is labelled:
+# the Gateway's namespace/label carries an ingress tag, application namespaces
+# carry their own tag, and a staged rollout flips those tags at different times.
+#
+# The interesting window is when the two tags point at different revisions.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: gwtest
+  labels:
+    istio.io/rev: stable
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: whoami
+  namespace: gwtest
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: whoami
+  template:
+    metadata:
+      labels:
+        app: whoami
+    spec:
+      containers:
+        - name: whoami
+          image: traefik/whoami:v1.10.2
+          ports:
+            - containerPort: 80
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: whoami
+  namespace: gwtest
+spec:
+  selector:
+    app: whoami
+  ports:
+    - port: 80
+      targetPort: 80
+---
+# Gateway resolves via a TAG, not a literal revision.
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: gtw-tagged
+  namespace: gwtest
+  labels:
+    istio.io/rev: ingressgw
+spec:
+  gatewayClassName: istio
+  listeners:
+    - name: http
+      protocol: HTTP
+      port: 80
+      hostname: "*.lab.local"
+      allowedRoutes:
+        namespaces:
+          from: Same
+---
+# Unlabelled: inherits the namespace tag. This is the ordinary application route.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: r-ns-tag
+  namespace: gwtest
+spec:
+  parentRefs:
+    - name: gtw-tagged
+  hostnames:
+    - r-ns-tag.lab.local
+  rules:
+    - backendRefs:
+        - name: whoami
+          port: 80

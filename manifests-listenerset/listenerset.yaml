@@ -1,0 +1,21 @@
+# ListenerSet half of the experiment. Kept out of manifests/ so the HTTPRoute
+# tests are not disturbed by it.
+#
+# The Gateway must opt in via spec.allowedListeners before a ListenerSet may
+# attach; without it, attachment is refused by the API contract rather than by
+# anything Istio decides.
+apiVersion: gateway.networking.k8s.io/v1
+kind: ListenerSet
+metadata:
+  name: extra-listeners
+  namespace: gwtest
+spec:
+  parentRef:
+    group: gateway.networking.k8s.io
+    kind: Gateway
+    name: gtw-lab
+  listeners:
+    - name: http-extra
+      protocol: HTTP
+      port: 8080
+      hostname: "*.extra.local"

@@ -1,0 +1,168 @@
+diff --git a/pilot/pkg/config/kube/gateway/controller.go b/pilot/pkg/config/kube/gateway/controller.go
+index 2d5af2d..267cf8a 100644
+--- a/pilot/pkg/config/kube/gateway/controller.go
++++ b/pilot/pkg/config/kube/gateway/controller.go
+@@ -304,31 +304,33 @@ func NewController(
+ 		ServiceEntries:  inputs.ServiceEntries,
+ 		InferencePools:  inputs.InferencePools,
+ 		internalContext: c.gatewayContext,
++		Gateways:        inputs.Gateways,
++		TagWatcher:      c.tagWatcher,
+ 	}
+ 	tcpRoutes := TCPRouteCollection(
+ 		inputs.TCPRoutes,
+ 		routeInputs,
+ 		opts,
+ 	)
+-	status.RegisterStatus(c.status, tcpRoutes.Status, GetStatus, c.routeTagWatcher())
++	status.RegisterStatus(c.status, tcpRoutes.Status, GetStatus, parentOwnedRoutes{c.tagWatcher.AccessUnprotected()})
+ 	tlsRoutes := TLSRouteCollection(
+ 		inputs.TLSRoutes,
+ 		routeInputs,
+ 		opts,
+ 	)
+-	status.RegisterStatus(c.status, tlsRoutes.Status, GetStatus, c.routeTagWatcher())
++	status.RegisterStatus(c.status, tlsRoutes.Status, GetStatus, parentOwnedRoutes{c.tagWatcher.AccessUnprotected()})
+ 	httpRoutes := HTTPRouteCollection(
+ 		inputs.HTTPRoutes,
+ 		routeInputs,
+ 		opts,
+ 	)
+-	status.RegisterStatus(c.status, httpRoutes.Status, GetStatus, c.routeTagWatcher())
++	status.RegisterStatus(c.status, httpRoutes.Status, GetStatus, parentOwnedRoutes{c.tagWatcher.AccessUnprotected()})
+ 	grpcRoutes := GRPCRouteCollection(
+ 		inputs.GRPCRoutes,
+ 		routeInputs,
+ 		opts,
+ 	)
+-	status.RegisterStatus(c.status, grpcRoutes.Status, GetStatus, c.routeTagWatcher())
++	status.RegisterStatus(c.status, grpcRoutes.Status, GetStatus, parentOwnedRoutes{c.tagWatcher.AccessUnprotected()})
+ 
+ 	RouteAttachments := krt.JoinCollection([]krt.Collection[RouteAttachment]{
+ 		tcpRoutes.RouteAttachments,
+@@ -649,6 +651,18 @@ func (c *Controller) inRevision(obj any) bool {
+ // PILOT_GATEWAY_API_ROUTE_REVISION is set, it returns a wrapper whose IsMine ignores the route's own
+ // and namespace labels and instead reports ownership based solely on whether the override resolves to
+ // this istiod's revision.
++// parentOwnedRoutes disables the per-object revision filter for route status.
++//
++// RegisterStatus can only see the object's own ObjectMeta, which is not enough to decide
++// route ownership now that it derives from the parent Gateway. The real decision is made in
++// RouteContextInputs.ownsRouteStatus, which has the parents in scope; a non-owning revision
++// returns a nil status there and so never reaches this filter with anything to write.
++type parentOwnedRoutes struct {
++	revisions.TagWatcher
++}
++
++func (parentOwnedRoutes) IsMine(metav1.ObjectMeta) bool { return true }
++
+ func (c *Controller) routeTagWatcher() revisions.TagWatcher {
+ 	tw := c.tagWatcher.AccessUnprotected()
+ 	if features.GatewayAPIRouteRevision == "" {
+diff --git a/pilot/pkg/config/kube/gateway/route_collections.go b/pilot/pkg/config/kube/gateway/route_collections.go
+index 3d37583..107a434 100644
+--- a/pilot/pkg/config/kube/gateway/route_collections.go
++++ b/pilot/pkg/config/kube/gateway/route_collections.go
+@@ -40,6 +40,7 @@ import (
+ 	"istio.io/istio/pkg/kube/controllers"
+ 	"istio.io/istio/pkg/kube/krt"
+ 	"istio.io/istio/pkg/ptr"
++	"istio.io/istio/pkg/revisions"
+ 	"istio.io/istio/pkg/slices"
+ 	"istio.io/istio/pkg/util/sets"
+ )
+@@ -209,6 +210,9 @@ func HTTPRouteCollection(
+ 				count++
+ 			}
+ 		}
++		if !inputs.ownsRouteStatus(krtctx, obj.ObjectMeta, parentRefs) {
++			return nil, virtualServices
++		}
+ 		return status, virtualServices
+ 	}, opts.WithName("HTTPRoute")...)
+ 
+@@ -423,6 +427,9 @@ func GRPCRouteCollection(
+ 				count++
+ 			}
+ 		}
++		if !inputs.ownsRouteStatus(krtctx, obj.ObjectMeta, parentRefs) {
++			return nil, virtualServices
++		}
+ 		return status, virtualServices
+ 	}, opts.WithName("GRPCRoute")...)
+ 
+@@ -521,6 +528,9 @@ func TCPRouteCollection(
+ 				count++
+ 			}
+ 		}
++		if !inputs.ownsRouteStatus(krtctx, obj.ObjectMeta, parentRefs) {
++			return nil, vs
++		}
+ 		return status, vs
+ 	}, opts.WithName("TCPRoute")...)
+ 
+@@ -626,6 +636,9 @@ func TLSRouteCollection(
+ 				count++
+ 			}
+ 		}
++		if !inputs.ownsRouteStatus(krtctx, obj.ObjectMeta, parentRefs) {
++			return nil, vs
++		}
+ 		return status, vs
+ 	}, opts.WithName("TLSRoute")...)
+ 	return RouteResult[*gatewayalpha.TLSRoute, gatewayalpha.TLSRouteStatus]{
+@@ -702,6 +715,54 @@ type RouteContextInputs struct {
+ 	ServiceEntries  krt.Collection[*networkingclient.ServiceEntry]
+ 	InferencePools  krt.Collection[*inferencev1.InferencePool]
+ 	internalContext krt.RecomputeProtected[*atomic.Pointer[GatewayContext]]
++	// Gateways and TagWatcher resolve which control plane owns a route's parent, which is
++	// what decides who authors the route's status. See ownsRouteStatus.
++	Gateways   krt.Collection[*gatewayv1.Gateway]
++	TagWatcher krt.RecomputeProtected[revisions.TagWatcher]
++}
++
++// ownsRouteStatus reports whether this control plane should author status for a route.
++//
++// Ownership follows the route's PARENT, not the route's own istio.io/rev label or the one
++// it inherits from its namespace. Those two can disagree for the entire duration of a
++// revision-tag upgrade, because the tag on the ingress Gateway and the tags on application
++// namespaces are flipped in separate steps. While they disagree the prior behaviour is one
++// of two failures: no control plane writes status at all, or a control plane writes status
++// for a Gateway it does not manage and cannot program - which it will do even while that
++// Gateway's own control plane is not running.
++//
++// A mesh parent has no Gateway to derive ownership from, so it keeps the previous rule and
++// is claimed by the revision the route itself resolves to.
++//
++// This gates the status WRITE only. Config emission is deliberately left alone: dropping
++// config from a non-owning revision removed xDS from pods still on that revision and caused
++// an outage (istio/istio#59959).
++func (i RouteContextInputs) ownsRouteStatus(
++	krtctx krt.HandlerContext,
++	routeMeta metav1.ObjectMeta,
++	parents []routeParentReference,
++) bool {
++	tw := i.TagWatcher.Get(krtctx)
++	for _, p := range parents {
++		if p.IsMesh() {
++			if tw.IsMine(routeMeta) {
++				return true
++			}
++			continue
++		}
++		if p.ParentKey.Kind != gvk.KubernetesGateway {
++			continue
++		}
++		gw := ptr.Flatten(krt.FetchOne(krtctx, i.Gateways,
++			krt.FilterKey(p.ParentKey.Namespace+"/"+p.ParentKey.Name)))
++		if gw == nil {
++			continue
++		}
++		if tw.IsMine(gw.ObjectMeta) {
++			return true
++		}
++	}
++	return false
+ }
+ 
+ func (i RouteContextInputs) WithCtx(krtctx krt.HandlerContext) RouteContext {

@@ -1,0 +1,13 @@
+# Enables Istio's support for the alpha/experimental gateway-api resources.
+#
+# Applied to every revision the lab installs. On some Istio versions this flag is
+# what constructs the informer for the experimental ListenerSet kind; with it unset
+# that collection is built empty and the resource is never observed, regardless of
+# whether the CRD exists. Versions that handle the graduated ListenerSet kind do not
+# need it, and setting it there is harmless.
+#
+# It also enables TCPRoute, TLSRoute and XBackendTrafficPolicy.
+
+pilot:
+  env:
+    PILOT_ENABLE_ALPHA_GATEWAY_API: "true"

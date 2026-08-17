@@ -1,0 +1,20 @@
+# Literal revision pin decides which control plane provisions and owns the
+# Gateway. Routes below attach to it; the variable under test is the routes'
+# own labels, so this one stays fixed.
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: gtw-lab
+  namespace: gwtest
+  labels:
+    istio.io/rev: __REV_NEW__
+spec:
+  gatewayClassName: istio
+  listeners:
+    - name: http
+      protocol: HTTP
+      port: 80
+      hostname: "*.lab.local"
+      allowedRoutes:
+        namespaces:
+          from: Same
